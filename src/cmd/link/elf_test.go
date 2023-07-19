@@ -7,6 +7,10 @@
 package main
 
 import (
+	"bytes"
+	"cmd/internal/buildid"
+	"cmd/internal/notsha256"
+	"cmd/link/internal/ld"
 	"debug/elf"
 	"fmt"
 	"internal/platform"
@@ -196,6 +200,52 @@ func TestMinusRSymsWithSameName(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Logf("%s", out)
 		t.Fatal(err)
+	}
+}
+
+func TestGNUBuildIDDerivedFromGoBuildID(t *testing.T) {
+	testenv.MustHaveGoBuild(t)
+
+	switch runtime.GOOS {
+	case "linux", "dragonfly", "openbsd", "netbsd", "freebsd":
+	default:
+		t.Skip("We should only test on elf output.")
+	}
+	t.Parallel()
+
+	goFile := filepath.Join(t.TempDir(), "notes.go")
+	if err := os.WriteFile(goFile, []byte(goSource), 0444); err != nil {
+		t.Fatal(err)
+	}
+	outFile := filepath.Join(t.TempDir(), "notes.exe")
+	goTool := testenv.GoToolPath(t)
+
+	cmd := testenv.Command(t, goTool, "build", "-o", outFile, "-ldflags",
+		"-B actionid", goFile)
+	cmd.Dir = t.TempDir()
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%s", out)
+
+	goBuildID, err := buildid.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("can't read Go build ID")
+	}
+	actionID := goBuildID[:strings.Index(goBuildID, "/")]
+	hashedActionID := notsha256.Sum256([]byte(actionID))
+
+	t.Logf("build ID: %v", goBuildID)
+
+	gnuBuildID, err := buildid.ReadELFNote(outFile, string(ld.ELF_NOTE_BUILDINFO_NAME), ld.ELF_NOTE_BUILDINFO_TAG)
+	if err != nil || gnuBuildID == nil {
+		t.Fatalf("can't read GNU build ID")
+	}
+
+	if !bytes.Equal(gnuBuildID, hashedActionID[:20]) {
+		t.Fatalf("build id not matching")
 	}
 }
 
